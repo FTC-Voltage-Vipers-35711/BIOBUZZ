@@ -27,6 +27,11 @@ public class Drivetrain extends OpMode {
     private static final double HEADING_KD = 0.06;             // damping per rad/s of rotation
     private static final double HEADING_MAX_CORRECTION = 0.4;  // never fight the driver harder than this
 
+    // Field-oriented drive: when ON, "up" on the stick always drives up-field
+    // no matter which way the robot is rotated. Toggle with the Options button
+    // on gamepad1 (the robot rumbles to confirm).
+    private static final int TOGGLE_RUMBLE_MS = 150;
+
     // Declare your 4 drivetrain motors
     private DcMotor frontLeft = null;
     private DcMotor backLeft = null;
@@ -40,6 +45,11 @@ public class Drivetrain extends OpMode {
     private double headingTarget = 0;
     private double lastHeading = 0;
     private final ElapsedTime headingTimer = new ElapsedTime();
+
+    // Field-oriented drive state (see loop())
+    private boolean fieldOriented = false;
+    private boolean toggleButtonPrev = false;
+    private double headingOffset = 0; // heading at Start = "up-field" direction
 
     @Override
     public void init() {
@@ -91,24 +101,58 @@ public class Drivetrain extends OpMode {
         // so the assist never yanks the robot toward some old angle.
         if (pinpoint != null) {
             pinpoint.update();
-            headingTarget = pinpoint.getHeading(AngleUnit.RADIANS);
-            lastHeading = headingTarget;
+            double heading = pinpoint.getHeading(AngleUnit.RADIANS);
+            headingTarget = heading;
+            lastHeading = heading;
+            // Field frame: "up" on the stick = the way the robot faces right now
+            headingOffset = heading;
             headingTimer.reset();
         }
     }
 
     @Override
     public void loop() {
+        // Field/robot-oriented toggle (Options button on gamepad1)
+        boolean toggleButton = gamepad1.options;
+        if (toggleButton && !toggleButtonPrev && pinpoint != null) {
+            fieldOriented = !fieldOriented;
+            gamepad1.rumble(TOGGLE_RUMBLE_MS);
+        }
+        toggleButtonPrev = toggleButton;
+
+        // Read the Pinpoint once per loop (2 odometry pods + IMU sensor fusion).
+        // Heading is CCW-positive radians.
+        double heading = 0;
+        if (pinpoint != null) {
+            pinpoint.update();
+            heading = pinpoint.getHeading(AngleUnit.RADIANS);
+        }
+
         // Mecanum math standard: y is forward (negated because push up is negative)
         // x is strafe, rx is rotation
         double y = applyDeadzone(-gamepad1.left_stick_y);
-        double x = applyDeadzone(gamepad1.left_stick_x) * 1.1; // Counteract empirical strafe friction loss
+        double x = applyDeadzone(gamepad1.left_stick_x);
         double rx = applyDeadzone(gamepad1.right_stick_x);
+
+        // Field-oriented drive: rotate the stick vector from the field frame
+        // into the robot frame so "up" always drives up-field. Rotation stick
+        // is left alone - right always turns the robot right in both modes.
+        if (fieldOriented) {
+            double fieldHeading = heading - headingOffset;
+            double cos = Math.cos(fieldHeading);
+            double sin = Math.sin(fieldHeading);
+            double fieldX = x;
+            double fieldY = y;
+            x = fieldX * cos + fieldY * sin;
+            y = -fieldX * sin + fieldY * cos;
+        }
+
+        x *= 1.1; // Counteract empirical strafe friction loss (robot's strafe axis)
 
         // Heading-hold feedback loop: while the driver isn't steering, a PD
         // controller on the Pinpoint heading corrects anything that would make
         // the robot curve off straight (track scrub, uneven motors, bumps).
-        rx += headingHoldCorrection(rx);
+        rx += headingHoldCorrection(heading, rx);
 
         // Trigger-tuned slow mode: feather the left trigger to trade speed for
         // precision. Scale is applied after normalization so it only shrinks the
@@ -132,6 +176,7 @@ public class Drivetrain extends OpMode {
         backRight.setPower(backRightPower / denominator * speedScale);
 
         // Debugging feedback to Driver Station
+        telemetry.addData("Drive mode", driveModeLabel());
         telemetry.addData("Speed scale", "%4.2f", speedScale);
         telemetry.addData("Motors FL | FR", "%4.2f | %4.2f", frontLeft.getPower(), frontRight.getPower());
         telemetry.addData("Motors BL | BR", "%4.2f | %4.2f", backLeft.getPower(), backRight.getPower());
@@ -157,11 +202,8 @@ public class Drivetrain extends OpMode {
      * actively steering (rx != 0) the target re-locks to the current heading,
      * so the assist is transparent - it only acts when nobody is steering.
      */
-    private double headingHoldCorrection(double rx) {
+    private double headingHoldCorrection(double heading, double rx) {
         if (pinpoint == null) return 0;
-
-        pinpoint.update();
-        double heading = pinpoint.getHeading(AngleUnit.RADIANS);
 
         if (rx != 0) {
             // Driver is steering: follow them and re-lock the target heading
@@ -190,5 +232,10 @@ public class Drivetrain extends OpMode {
         while (angle > Math.PI) angle -= 2 * Math.PI;
         while (angle < -Math.PI) angle += 2 * Math.PI;
         return angle;
+    }
+
+    private String driveModeLabel() {
+        if (pinpoint == null) return "robot-oriented (no pinpoint in config)";
+        return fieldOriented ? "FIELD-oriented (Options toggles)" : "robot-oriented (Options toggles)";
     }
 }
