@@ -46,7 +46,8 @@ public class Drivetrain extends OpMode {
     private double lastHeading = 0;
     private final ElapsedTime headingTimer = new ElapsedTime();
 
-    // Field-oriented drive state (see loop())
+    // Field-oriented drive state (see loop()). Always starts in NORMAL
+    // robot-oriented mode; press Options to switch to field-oriented.
     private boolean fieldOriented = false;
     private boolean toggleButtonPrev = false;
     private double headingOffset = 0; // heading at Start = "up-field" direction
@@ -108,6 +109,10 @@ public class Drivetrain extends OpMode {
             headingOffset = heading;
             headingTimer.reset();
         }
+
+        // Sync the toggle button so a button already held at Start can never
+        // silently flip the drive mode - it always starts normal.
+        toggleButtonPrev = gamepad1.options;
     }
 
     @Override
