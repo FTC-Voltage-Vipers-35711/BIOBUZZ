@@ -11,6 +11,10 @@ public class Drivetrain extends OpMode {
     // Stick values smaller than this are ignored so the robot doesn't creep from stick drift
     private static final double STICK_DEADZONE = 0.05;
 
+    // Slow mode floor: left trigger feathers drive speed from full speed (trigger
+    // released) down to this value (trigger fully held) for precision driving
+    private static final double SLOW_SPEED = 0.35;
+
     // Declare your 4 drivetrain motors
     private DcMotor frontLeft = null;
     private DcMotor backLeft = null;
@@ -65,6 +69,11 @@ public class Drivetrain extends OpMode {
         double x = applyDeadzone(gamepad1.left_stick_x) * 1.1; // Counteract empirical strafe friction loss
         double rx = applyDeadzone(gamepad1.right_stick_x);
 
+        // Trigger-tuned slow mode: feather the left trigger to trade speed for
+        // precision. Scale is applied after normalization so it only shrinks the
+        // output magnitude - steering ratios stay exactly the same.
+        double speedScale = 1.0 - (1.0 - SLOW_SPEED) * applyDeadzone(gamepad1.left_trigger);
+
         // Calculate power for each wheel
         double frontLeftPower  = y + x + rx;
         double backLeftPower   = y - x + rx;
@@ -76,12 +85,13 @@ public class Drivetrain extends OpMode {
         double denominator = Math.max(Math.abs(y) + Math.abs(x) + Math.abs(rx), 1.0);
 
         // Final output to the hardware
-        frontLeft.setPower(frontLeftPower / denominator);
-        backLeft.setPower(backLeftPower / denominator);
-        frontRight.setPower(frontRightPower / denominator);
-        backRight.setPower(backRightPower / denominator);
+        frontLeft.setPower(frontLeftPower / denominator * speedScale);
+        backLeft.setPower(backLeftPower / denominator * speedScale);
+        frontRight.setPower(frontRightPower / denominator * speedScale);
+        backRight.setPower(backRightPower / denominator * speedScale);
 
         // Debugging feedback to Driver Station
+        telemetry.addData("Speed scale", "%4.2f", speedScale);
         telemetry.addData("Motors FL | FR", "%4.2f | %4.2f", frontLeft.getPower(), frontRight.getPower());
         telemetry.addData("Motors BL | BR", "%4.2f | %4.2f", backLeft.getPower(), backRight.getPower());
     }
