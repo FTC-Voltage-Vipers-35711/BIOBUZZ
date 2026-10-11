@@ -25,11 +25,13 @@ public class Drivetrain extends OpMode {
         frontRight = hardwareMap.get(DcMotor.class, "front_right");
         backRight  = hardwareMap.get(DcMotor.class, "back_right");
 
-        // Reverse the right side motors so positive power moves the robot forward
-        frontLeft.setDirection(DcMotorSimple.Direction.FORWARD);
-        backLeft.setDirection(DcMotorSimple.Direction.FORWARD);
-        frontRight.setDirection(DcMotorSimple.Direction.REVERSE);
-        backRight.setDirection(DcMotorSimple.Direction.REVERSE);
+        // On this build every direction came out mirrored, so BOTH sides are the
+        // opposite of the usual convention (left REVERSE, right FORWARD).
+        // This inverts forward/back, strafe, AND rotation together.
+        frontLeft.setDirection(DcMotorSimple.Direction.REVERSE);
+        backLeft.setDirection(DcMotorSimple.Direction.REVERSE);
+        frontRight.setDirection(DcMotorSimple.Direction.FORWARD);
+        backRight.setDirection(DcMotorSimple.Direction.FORWARD);
 
         // Open-loop power control - don't let a leftover encoder mode from another
         // OpMode change how setPower behaves
