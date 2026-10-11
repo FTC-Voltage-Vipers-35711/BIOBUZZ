@@ -5,7 +5,7 @@ import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
 
-@TeleOp(name = "BasicMecanumTeleOp", group = "Iterative Opmode")
+@TeleOp(name = "parralell plate meccanum wheel drive train new build lock in casey", group = "Iterative Opmode")
 public class Drivetrain extends OpMode {
 
     // Stick values smaller than this are ignored so the robot doesn't creep from stick drift
@@ -20,10 +20,10 @@ public class Drivetrain extends OpMode {
     @Override
     public void init() {
         // Hardware Mapping - names must perfectly match your REV Control Hub config
-        frontLeft  = hardwareMap.get(DcMotor.class, "frontLeft");
-        backLeft   = hardwareMap.get(DcMotor.class, "backLeft");
-        frontRight = hardwareMap.get(DcMotor.class, "frontRight");
-        backRight  = hardwareMap.get(DcMotor.class, "backRight");
+        frontLeft  = hardwareMap.get(DcMotor.class, "front_left");
+        backLeft   = hardwareMap.get(DcMotor.class, "back_left");
+        frontRight = hardwareMap.get(DcMotor.class, "front_right");
+        backRight  = hardwareMap.get(DcMotor.class, "back_right");
 
         // Reverse the right side motors so positive power moves the robot forward
         frontLeft.setDirection(DcMotorSimple.Direction.FORWARD);
