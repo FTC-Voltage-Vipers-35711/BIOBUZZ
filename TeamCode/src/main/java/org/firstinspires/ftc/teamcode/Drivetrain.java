@@ -2,8 +2,12 @@ package org.firstinspires.ftc.teamcode;
 
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import com.qualcomm.hardware.gobilda.GoBildaPinpointDriver;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
+import com.qualcomm.robotcore.util.ElapsedTime;
+
+import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
 
 @TeleOp(name = "parralell plate meccanum wheel drive train new build lock in casey", group = "Iterative Opmode")
 public class Drivetrain extends OpMode {
@@ -15,11 +19,27 @@ public class Drivetrain extends OpMode {
     // released) down to this value (trigger fully held) for precision driving
     private static final double SLOW_SPEED = 0.35;
 
+    // Heading-hold feedback loop gains (see headingHoldCorrection). The sign of
+    // HEADING_KP assumes the current motor directions (left REVERSE / right
+    // FORWARD). If you ever flip motor directions again, flip this sign too or
+    // the assist will amplify drift instead of fixing it.
+    private static final double HEADING_KP = 1.2;              // turn power per radian of error
+    private static final double HEADING_KD = 0.06;             // damping per rad/s of rotation
+    private static final double HEADING_MAX_CORRECTION = 0.4;  // never fight the driver harder than this
+
     // Declare your 4 drivetrain motors
     private DcMotor frontLeft = null;
     private DcMotor backLeft = null;
     private DcMotor frontRight = null;
     private DcMotor backRight = null;
+
+    // Heading-hold feedback loop (goBILDA Pinpoint V2: 2 odometry pods + IMU).
+    // Optional hardware: if the Pinpoint isn't configured yet, the assist
+    // quietly disables itself and the teleop drives normally.
+    private GoBildaPinpointDriver pinpoint = null;
+    private double headingTarget = 0;
+    private double lastHeading = 0;
+    private final ElapsedTime headingTimer = new ElapsedTime();
 
     @Override
     public void init() {
@@ -50,7 +70,15 @@ public class Drivetrain extends OpMode {
         frontRight.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         backRight.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
 
+        // Optional heading sensor for the straight-driving feedback loop
+        try {
+            pinpoint = hardwareMap.get(GoBildaPinpointDriver.class, "pinpoint");
+        } catch (Exception e) {
+            pinpoint = null;
+        }
+
         telemetry.addData("Status", "Initialized Successfully");
+        telemetry.addData("Heading assist", pinpoint != null ? "ON" : "OFF (no pinpoint in config)");
     }
 
     @Override
@@ -59,6 +87,14 @@ public class Drivetrain extends OpMode {
 
     @Override
     public void start() {
+        // Lock the heading-hold target to wherever the robot is actually facing
+        // so the assist never yanks the robot toward some old angle.
+        if (pinpoint != null) {
+            pinpoint.update();
+            headingTarget = pinpoint.getHeading(AngleUnit.RADIANS);
+            lastHeading = headingTarget;
+            headingTimer.reset();
+        }
     }
 
     @Override
@@ -68,6 +104,11 @@ public class Drivetrain extends OpMode {
         double y = applyDeadzone(-gamepad1.left_stick_y);
         double x = applyDeadzone(gamepad1.left_stick_x) * 1.1; // Counteract empirical strafe friction loss
         double rx = applyDeadzone(gamepad1.right_stick_x);
+
+        // Heading-hold feedback loop: while the driver isn't steering, a PD
+        // controller on the Pinpoint heading corrects anything that would make
+        // the robot curve off straight (track scrub, uneven motors, bumps).
+        rx += headingHoldCorrection(rx);
 
         // Trigger-tuned slow mode: feather the left trigger to trade speed for
         // precision. Scale is applied after normalization so it only shrinks the
@@ -108,5 +149,46 @@ public class Drivetrain extends OpMode {
 
     private static double applyDeadzone(double value) {
         return Math.abs(value) < STICK_DEADZONE ? 0 : value;
+    }
+
+    /**
+     * Heading-hold feedback loop. Returns a turn correction to add to rx so the
+     * robot keeps driving straight instead of curving. While the driver is
+     * actively steering (rx != 0) the target re-locks to the current heading,
+     * so the assist is transparent - it only acts when nobody is steering.
+     */
+    private double headingHoldCorrection(double rx) {
+        if (pinpoint == null) return 0;
+
+        pinpoint.update();
+        double heading = pinpoint.getHeading(AngleUnit.RADIANS);
+
+        if (rx != 0) {
+            // Driver is steering: follow them and re-lock the target heading
+            headingTarget = heading;
+            lastHeading = heading;
+            headingTimer.reset();
+            return 0;
+        }
+
+        double dt = headingTimer.seconds();
+        headingTimer.reset();
+
+        double error = wrapAngle(headingTarget - heading); // radians, [-pi, pi]
+        double velocity = (dt > 0 && dt < 0.5) ? wrapAngle(heading - lastHeading) / dt : 0;
+        lastHeading = heading;
+
+        double correction = HEADING_KP * error - HEADING_KD * velocity;
+        correction = Math.max(-HEADING_MAX_CORRECTION, Math.min(HEADING_MAX_CORRECTION, correction));
+
+        telemetry.addData("Heading hold err (deg)", "%.1f", Math.toDegrees(error));
+        return correction;
+    }
+
+    /** Wraps an angle to [-pi, pi] radians so heading errors stay small. */
+    private static double wrapAngle(double angle) {
+        while (angle > Math.PI) angle -= 2 * Math.PI;
+        while (angle < -Math.PI) angle += 2 * Math.PI;
+        return angle;
     }
 }
