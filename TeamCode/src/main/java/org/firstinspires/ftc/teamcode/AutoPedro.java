@@ -38,6 +38,12 @@ public class AutoPedro extends LinearOpMode {
     // match auto, set this to your alliance's actual starting coordinates.
     private static final Pose START_POSE = new Pose(0, 0, 0);
 
+    // How long to hold the end pose after the path finishes. follower.hold() is
+    // a PD pose-hold: if anything bumps or pushes the robot during this window,
+    // it drives itself back to the held pose. 15s covers the rest of the auto
+    // period for the straight-box test; shorten for a real match auto.
+    private static final double POSE_HOLD_SECONDS = 15.0;
+
     @Override
     public void runOpMode() {
         // Build the Follower: Pinpoint V2 localizer (2 pods + IMU sensor fusion)
@@ -67,12 +73,12 @@ public class AutoPedro extends LinearOpMode {
         followUntilDone(follower, back,      "3/4 back 48in");
         followUntilDone(follower, strafeHome,"4/4 strafe left 24in - home");
 
-        // Actively hold the end pose briefly so the robot doesn't roll away
+        // Pose-hold PID: hold the end pose and drive back to it if pushed
         follower.hold(START_POSE);
         ElapsedTime holdTimer = new ElapsedTime();
-        while (opModeIsActive() && holdTimer.seconds() < 2.0) {
+        while (opModeIsActive() && holdTimer.seconds() < POSE_HOLD_SECONDS) {
             follower.update();
-            sendPoseTelemetry(follower, "holding end pose");
+            sendPoseTelemetry(follower, "holding end pose (bump it, it comes back)");
             telemetry.update();
         }
 

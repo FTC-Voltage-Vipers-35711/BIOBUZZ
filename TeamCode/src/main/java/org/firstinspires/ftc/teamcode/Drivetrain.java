@@ -8,6 +8,8 @@ import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.util.ElapsedTime;
 
 import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
+import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
+import org.firstinspires.ftc.robotcore.external.navigation.Pose2D;
 
 @TeleOp(name = "parralell plate meccanum wheel drive train new build lock in casey", group = "Iterative Opmode")
 public class Drivetrain extends OpMode {
@@ -26,6 +28,24 @@ public class Drivetrain extends OpMode {
     private static final double HEADING_KP = 1.2;              // turn power per radian of error
     private static final double HEADING_KD = 0.06;             // damping per rad/s of rotation
     private static final double HEADING_MAX_CORRECTION = 0.4;  // never fight the driver harder than this
+
+    // Position hold: after the driver leaves both sticks neutral for HOLD_DELAY,
+    // the robot locks onto its current field pose and a PD loop drives it back
+    // if it gets pushed - same idea as the heading hold, one axis over. The D
+    // term comes from the Pinpoint's own velocity estimate, so it's real damping,
+    // not a finite difference. Gains are deliberately conservative for a first
+    // run; if it overshoots raise POS_KD, if it crawls back raise POS_KP. If it
+    // pushes the wrong way when bumped, flip the sign of the strafe line in
+    // positionHoldCorrection (drive-motor direction changes shift it).
+    private static final double POS_KP = 0.10;                 // power per inch of pose error
+    private static final double POS_KD = 0.04;                // power per in/s of drift
+    private static final double POS_MAX_CORRECTION = 0.30;    // clamp per axis so a shove can't cause a lunge
+    private static final double HOLD_DELAY = 0.25;            // seconds of neutral sticks before locking the pose
+
+    // Slew-rate limiter: motor powers can only change by SLEW_RATE per second,
+    // which is what makes starts/stops/hold corrections feel smooth instead of
+    // snappy. Applied to the FINAL output, after every other calculation.
+    private static final double SLEW_RATE = 6.0;              // power units per second
 
     // Field-oriented drive: when ON, "up" on the stick always drives up-field
     // no matter which way the robot is rotated. Toggle with the Options button
@@ -51,6 +71,16 @@ public class Drivetrain extends OpMode {
     private boolean fieldOriented = false;
     private boolean toggleButtonPrev = false;
     private double headingOffset = 0; // heading at Start = "up-field" direction
+
+    // Position-hold state (see loop() and positionHoldCorrection)
+    private boolean holdingPose = false;   // true while the PD loop owns the drivetrain
+    private double holdX = 0;              // locked field pose, inches
+    private double holdY = 0;              // locked field pose, inches
+    private final ElapsedTime neutralTimer = new ElapsedTime();
+
+    // Slew-rate limiter state: the last power actually commanded to each motor
+    private final double[] lastPower = new double[4]; // FL, BL, FR, BR
+    private final ElapsedTime slewTimer = new ElapsedTime();
 
     @Override
     public void init() {
@@ -88,8 +118,12 @@ public class Drivetrain extends OpMode {
             pinpoint = null;
         }
 
+        neutralTimer.reset();
+        slewTimer.reset();
+
         telemetry.addData("Status", "Initialized Successfully");
         telemetry.addData("Heading assist", pinpoint != null ? "ON" : "OFF (no pinpoint in config)");
+        telemetry.addData("Position hold", pinpoint != null ? "ON (sticks neutral = hold pose)" : "OFF (no pinpoint in config)");
     }
 
     @Override
@@ -152,6 +186,28 @@ public class Drivetrain extends OpMode {
             y = -fieldX * sin + fieldY * cos;
         }
 
+        // Position hold: while nobody is driving, lock onto the pose the robot
+        // settled at and PD back to it if it gets pushed. Driving clears the
+        // hold; the lock only engages after HOLD_DELAY of neutral sticks so it
+        // never fights the driver mid-maneuver or catches settling motion.
+        if (pinpoint != null) {
+            boolean sticksActive = Math.abs(y) + Math.abs(x) + Math.abs(rx) > 0;
+            if (sticksActive) {
+                holdingPose = false;
+                neutralTimer.reset();
+            } else if (!holdingPose && neutralTimer.seconds() > HOLD_DELAY) {
+                Pose2D p = pinpoint.getPosition();
+                holdX = p.getX(DistanceUnit.INCH);
+                holdY = p.getY(DistanceUnit.INCH);
+                holdingPose = true;
+            }
+            if (holdingPose) {
+                double[] correction = positionHoldCorrection(heading);
+                y += correction[0];  // forward/back
+                x += correction[1];  // strafe
+            }
+        }
+
         x *= 1.1; // Counteract empirical strafe friction loss (robot's strafe axis)
 
         // Heading-hold feedback loop: while the driver isn't steering, a PD
@@ -174,23 +230,71 @@ public class Drivetrain extends OpMode {
         // if any single calculated power exceeds the motor limit of 1.0
         double denominator = Math.max(Math.abs(y) + Math.abs(x) + Math.abs(rx), 1.0);
 
-        // Final output to the hardware
-        frontLeft.setPower(frontLeftPower / denominator * speedScale);
-        backLeft.setPower(backLeftPower / denominator * speedScale);
-        frontRight.setPower(frontRightPower / denominator * speedScale);
-        backRight.setPower(backRightPower / denominator * speedScale);
+        // Final output to the hardware, through the slew-rate limiter so every
+        // power change (joystick, slow mode, hold corrections) ramps smoothly.
+        double[] desired = {
+            frontLeftPower  / denominator * speedScale,
+            backLeftPower   / denominator * speedScale,
+            frontRightPower / denominator * speedScale,
+            backRightPower  / denominator * speedScale
+        };
+        double maxStep = SLEW_RATE * Math.min(slewTimer.seconds(), 0.1); // cap dt so a loop stall can't skip the ramp
+        slewTimer.reset();
+        for (int i = 0; i < 4; i++) {
+            lastPower[i] = Math.max(lastPower[i] - maxStep, Math.min(lastPower[i] + maxStep, desired[i]));
+        }
+        frontLeft.setPower(lastPower[0]);
+        backLeft.setPower(lastPower[1]);
+        frontRight.setPower(lastPower[2]);
+        backRight.setPower(lastPower[3]);
 
         // Debugging feedback to Driver Station
         telemetry.addData("Drive mode", driveModeLabel());
+        telemetry.addData("Pose hold", holdingPose ? "HOLDING (bump it, it comes back)" : "off (driving)");
         telemetry.addData("Speed scale", "%4.2f", speedScale);
         telemetry.addData("Motors FL | FR", "%4.2f | %4.2f", frontLeft.getPower(), frontRight.getPower());
         telemetry.addData("Motors BL | BR", "%4.2f | %4.2f", backLeft.getPower(), backRight.getPower());
+    }
+
+    /**
+     * Position-hold PD loop. Returns {forward, strafe} power corrections that
+     * drive the robot back to the locked field pose (holdX, holdY). The pose
+     * error and the Pinpoint's velocity estimate are both rotated from the
+     * field frame into the robot frame so the correction lands on the right
+     * wheels regardless of which way the robot is facing.
+     */
+    private double[] positionHoldCorrection(double heading) {
+        Pose2D current = pinpoint.getPosition();
+        double errX = holdX - current.getX(DistanceUnit.INCH);
+        double errY = holdY - current.getY(DistanceUnit.INCH);
+
+        double velX = pinpoint.getVelX(DistanceUnit.INCH);
+        double velY = pinpoint.getVelY(DistanceUnit.INCH);
+
+        // Field frame (x forward, y left at Start) -> robot frame (y forward, x strafe)
+        double cos = Math.cos(heading);
+        double sin = Math.sin(heading);
+        double errForward = errX * cos + errY * sin;
+        double errLeft    = -errX * sin + errY * cos;
+        double velForward = velX * cos + velY * sin;
+        double velLeft    = -velX * sin + velY * cos;
+
+        double forward = POS_KP * errForward - POS_KD * velForward;
+        double left    = POS_KP * errLeft    - POS_KD * velLeft;
+
+        forward = Math.max(-POS_MAX_CORRECTION, Math.min(POS_MAX_CORRECTION, forward));
+        left    = Math.max(-POS_MAX_CORRECTION, Math.min(POS_MAX_CORRECTION, left));
+
+        telemetry.addData("Pose hold err (in)", "%.2f", Math.hypot(errX, errY));
+        return new double[] {forward, -left}; // x stick is right-positive, so negate the left component
     }
 
     @Override
     public void stop() {
         // Safe-state cleanup when stop is pressed. Null-checked because the SDK can
         // still call stop() if init() failed before the hardware was mapped.
+        holdingPose = false;
+        for (int i = 0; i < 4; i++) lastPower[i] = 0;
         if (frontLeft != null)  frontLeft.setPower(0);
         if (backLeft != null)   backLeft.setPower(0);
         if (frontRight != null) frontRight.setPower(0);
